@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:13
+    container_name: postgres_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1009
+      POSTGRES_DB: m_video_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+  
+  m_vid_parser:
+    build:
+      context: ./MVidParser
+    container_name: m_vid_parser
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=m_video_db
+      - DB_USER=postgres
+      - DB_PASSWORD=1009
+    depends_on:
+      - postgres
+
+  m_vid_parser_api:
+    build:
+      context: ./MVidParserAPI
+    container_name: m_vid_parser_api
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=m_video_db
+      - DB_USER=postgres
+      - DB_PASSWORD=1009
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+
+  m_vid_parser_tg:
+    build:
+      context: ./MVidParserTG
+    container_name: m_vid_parser_tg
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=m_video_db
+      - DB_USER=postgres
+      - DB_PASSWORD=1009
+      - API_ID=
+      - API_HASH=
+      - BOT_TOKEN=
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
