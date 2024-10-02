@@ -1,7 +1,23 @@
-import time
-import requests
-import schedule
-from models import SessionLocal, Product, PriceHistory
+import asyncio
+import aiohttp
+from sqlalchemy.future import select
+from models import AsyncSessionLocal, Product, PriceHistory, init_db
+import logging
+from logging import INFO
+
+
+# Настройка логирования
+def __config_logger():
+    file_log = logging.FileHandler('parser-service.log')
+    console_log = logging.StreamHandler()
+    FORMAT = '[%(levelname)s] %(asctime)s : %(message)s | %(filename)s'
+    logging.basicConfig(level=INFO,
+                        format=FORMAT,
+                        handlers=(file_log, console_log),
+                        datefmt='%d-%m-%y - %H:%M:%S')
+
+
+logger = logging.getLogger()
 
 cookies = {
     '__lhash_': 'aa2659c8a18fa628c9773fa7e18a28ff',
@@ -92,7 +108,7 @@ cookies = {
 }
 
 
-def get_product_data(product_url):
+async def get_product_data(product_url):
     headers = {
         'accept': '*/*',
         'accept-language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -113,22 +129,26 @@ def get_product_data(product_url):
         'productId': product_id,
     }
 
-    response_product = requests.get('https://www.mvideo.ru/bff/product-details', params=params_product, cookies=cookies, headers=headers)
+    try:
+        async with aiohttp.ClientSession(cookies=cookies) as session:
+            async with session.get('https://www.mvideo.ru/bff/product-details', params=params_product,
+                                   headers=headers) as response:
+                if response.status != 200:
+                    logger.error(f"Ошибка при получении данных продукта: {response.status}")
+                    return None
+                data = await response.json()
 
-    # проверка успешного выполнения запроса
-    if response_product.status_code == 200:
-        # парсим json
-        data = response_product.json()
-    else:
-        print(f"Ошибка: {response_product.status_code}")
-
-    product_name = data['body']['name']
-    product_rating = data['body']['rating']['star']
-    product_description = data['body']['description']
-    return product_name, product_rating, product_description
+        product_name = data['body']['name']
+        product_rating = data['body']['rating']['star']
+        product_description = data['body']['description']
+        logger.info(f"Получены данные продукта: {product_name}, рейтинг: {product_rating}")
+        return product_name, product_rating, product_description
+    except Exception as e:
+        logger.error(f"Ошибка при запросе данных продукта: {e}")
+        return None
 
 
-def get_product_price(product_url):
+async def get_product_price(product_url):
     headers = {
         'accept': '*/*',
         'accept-language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -150,69 +170,84 @@ def get_product_price(product_url):
         'isPromoApplied': 'true',
         'productIds': product_id,
     }
-    response_price = requests.get('https://www.mvideo.ru/bff/products/prices', params=params_price, cookies=cookies, headers=headers)
 
-    # проверка успешного выполнения запроса
-    if response_price.status_code == 200:
-        # парсим json
-        data_price = response_price.json()
-    else:
-        print(f"Ошибка: {response_price.status_code}")
+    try:
+        async with aiohttp.ClientSession(cookies=cookies) as session:
+            async with session.get('https://www.mvideo.ru/bff/products/prices', params=params_price,
+                                   headers=headers) as response:
+                if response.status != 200:
+                    logger.error(f"Ошибка при получении цены: {response.status}")
+                    return None
+                data_price = await response.json()
 
-    product_price = data_price['body']['materialPrices'][0]['price']['salePrice']
-
-    return product_price
+        product_price = data_price['body']['materialPrices'][0]['price']['salePrice']
+        logger.info(f"Получена цена продукта: {product_price}")
+        return product_price
+    except Exception as e:
+        logger.error(f"Ошибка при запросе цены: {e}")
+        return None
 
 
 # Функция для обновления информации о товаре
-def update_product_data():
-    db = SessionLocal()
-    try:
-        products = db.query(Product).all()
-        for product in products:
-            print(product.url)
-            if product.name is None:
-                print("имя пусто")
-                name, rating, description = get_product_data(product.url)
-                price = get_product_price(product.url)
+async def update_product_data():
+    async with AsyncSessionLocal() as db:
+        try:
+            result = await db.execute(select(Product))
+            products = result.scalars().all()
 
-                # Обновление данных в базе
-                product.name = name
-                product.rating = rating
-                product.description = description
-                product.price = price
+            for product in products:
+                logger.info(f"Обработка товара: {product.url}")
+                if product.name is None:
+                    product_data = await get_product_data(product.url)
+                    if product_data:
+                        name, rating, description = product_data
+                        price = await get_product_price(product.url)
 
-                # Сохранение изменений
-                db.commit()
+                        # Обновление данных в базе
+                        product.name = name
+                        product.rating = rating
+                        product.description = description
+                        product.price = price
 
-                # Сохранение истории цен
-                price_history = PriceHistory(product_id=product.id, price=price)
-                db.add(price_history)
+                        # Сохранение изменений
+                        await db.commit()
 
-            else:
-                print("имя есть")
-                price = get_product_price(product.url)
+                        # Сохранение истории цен
+                        price_history = PriceHistory(product_id=product.id, price=price)
+                        db.add(price_history)
+                    else:
+                        logger.warning(f"Не удалось получить данные для товара: {product.url}")
+                else:
+                    price = await get_product_price(product.url)
+                    if price:
+                        # Обновление данных в базе
+                        product.price = price
 
-                # Обновление данных в базе
-                product.price = price
+                        # Сохранение изменений
+                        await db.commit()
 
-                # Сохранение изменений
-                db.commit()
+                        # Сохранение истории цен
+                        price_history = PriceHistory(product_id=product.id, price=price)
+                        db.add(price_history)
+                    else:
+                        logger.warning(f"Не удалось обновить цену для товара: {product.url}")
 
-                # Сохранение истории цен
-                price_history = PriceHistory(product_id=product.id, price=price)
-                db.add(price_history)
-
-        db.commit()
-    finally:
-        db.close()
+            await db.commit()
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении данных товара: {e}")
 
 
-# Настройка планировщика для выполнения функции каждый час. Если просто будем слипать на час, то частота обновления
-# будет 60 + n минут, где n это время выполнения апдейта цены
-schedule.every().hour.at(":00").do(update_product_data)
+# Запуск планировщика
+async def run_scheduler():
+    await init_db()
+    while True:
+        try:
+            await update_product_data()
+            await asyncio.sleep(3600)  # Ждём 1 час перед следующим запуском
+        except Exception as e:
+            logger.error(f"Ошибка в планировщике: {e}")
+
 
 if __name__ == "__main__":
-    while True:
-        schedule.run_pending()
-        time.sleep(55)
+    __config_logger()
+    asyncio.run(run_scheduler())

@@ -1,21 +1,23 @@
-from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime
-from pydantic import BaseModel
-from typing import Optional
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, String, Text, Numeric, ForeignKey, DECIMAL, DateTime
+from pydantic import BaseModel
+from datetime import datetime
+from typing import Optional
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Строка подключения к базе данных PostgreSQL
-database_url = f"postgresql+psycopg2://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
+# Асинхронная строка подключения к базе данных PostgreSQL
+database_url = f"postgresql+asyncpg://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
 
-# Создание объекта Engine для подключения
-engine = create_engine(database_url)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Создание асинхронного объекта Engine для подключения
+engine = create_async_engine(database_url)
+
+# Создание асинхронной сессии
+SessionLocal = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
 # Базовый класс для моделей
 Base = declarative_base()
@@ -31,6 +33,7 @@ class Product(Base):
     rating = Column(Numeric(2, 1), nullable=True)
     url = Column(String(255), nullable=False)
     price = Column(DECIMAL(10, 2), nullable=True)
+    user_id = Column(String(255), nullable=False, index=True)
 
 
 # Модель истории цен
@@ -44,16 +47,18 @@ class PriceHistory(Base):
 
 
 # Создание всех таблиц (если они еще не созданы)
-Base.metadata.create_all(bind=engine)
+async def init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 
-# Зависимость для создания сессии с базой данных
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# Зависимость для создания асинхронной сессии с базой данных
+async def get_db():
+    async with SessionLocal() as db:
+        try:
+            yield db
+        finally:
+            await db.close()
 
 
 # Pydantic модель для создания товара

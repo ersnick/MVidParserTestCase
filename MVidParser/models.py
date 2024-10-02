@@ -1,8 +1,6 @@
-from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
-from pydantic import BaseModel
-from typing import List, Optional
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, String, Text, Numeric, ForeignKey, DECIMAL, DateTime
 import os
@@ -11,11 +9,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Строка подключения к базе данных PostgreSQL
-database_url = f"postgresql+psycopg2://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
+database_url = f"postgresql+asyncpg://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
+engine = create_async_engine(database_url)
 
-# Создание объекта Engine для подключения
-engine = create_engine(database_url)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Асинхронная сессия
+AsyncSessionLocal = sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+)
 
 # Базовый класс для моделей
 Base = declarative_base()
@@ -31,6 +35,7 @@ class Product(Base):
     rating = Column(Numeric(2, 1), nullable=True)
     url = Column(String(255), nullable=False)
     price = Column(DECIMAL(10, 2), nullable=True)
+    user_id = Column(String(255), nullable=False, index=True)
 
 
 # Модель истории цен
@@ -44,42 +49,6 @@ class PriceHistory(Base):
 
 
 # Создание всех таблиц (если они еще не созданы)
-Base.metadata.create_all(bind=engine)
-
-
-# Зависимость для создания сессии с базой данных
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-# Pydantic модель для создания товара
-class ProductCreate(BaseModel):
-    url: str
-
-
-# Pydantic модель для отображения информации о товаре
-class ProductView(BaseModel):
-    id: int
-    name: Optional[str]
-    description: Optional[str]
-    url: str
-    price: Optional[float]
-    rating: Optional[float]
-
-    class Config:
-        orm_mode = True
-
-
-# Pydantic модель для истории цен
-class PriceHistoryView(BaseModel):
-    id: int
-    product_id: int
-    price: float
-    recorded_at: datetime
-
-    class Config:
-        orm_mode = True
+async def init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
